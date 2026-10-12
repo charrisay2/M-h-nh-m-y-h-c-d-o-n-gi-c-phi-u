@@ -1,0 +1,150 @@
+# ============================================================
+# Cấu hình trung tâm cho toàn bộ pipeline
+# Mọi tham số đều nằm ở đây để đảm bảo reproducible
+# ============================================================
+
+project:
+  name: "stock-trend-prediction"
+  seed: 42
+  start_date: "2015-01-01"
+  end_date: "2025-12-31"
+  # Mã nào có ít ngày hơn mức này sẽ bị loại (đảm bảo đủ dữ liệu huấn luyện)
+  min_history_days: 1500
+  # Thư mục gốc (tương đối so với file config.yaml)
+  raw_dir: "data/raw"
+  processed_dir: "data/processed"
+  reports_dir: "reports"
+  models_dir: "models"
+
+# ------------------------------------------------------------
+# Danh sách mã chứng khoán
+# Tiêu chí chọn: thanh khoản cao, niêm yết >= 10 năm, không bị đình chỉ
+# ------------------------------------------------------------
+markets:
+  vn:
+    label: "Việt Nam (VN30)"
+    source: "yfinance"         # Yahoo hỗ trợ mã VN với hậu tố .VN
+    ticker_suffix: ".VN"
+    index_ticker: "^VNI"       # Yahoo không có -> tự động dùng equal-weight làm biến thị trường
+    # Chi phí giao dịch 1 chiều (bps): phí môi giới ~15bps + thuế 10bps + slippage ~10bps
+    cost_bps: 35
+    tickers:
+      - ACB, BCM, BID, BVH, CTG, FPT, GAS, GVR, HDB, HPG
+      - MBB, MSN, MWG, PLX, POW, SAB, SHB, SSI, STB, TCB
+      - TPB, VCB, VHM, VIC, VIB, VJC, VNM, VPB, VRE, MSB
+
+  us:
+    label: "Hoa Kỳ (S&P 500)"
+    source: "yfinance"
+    index_ticker: "SPY"
+    # Chi phí 1 chiều (bps): commission 0 + slippage/spread ~5bps
+    cost_bps: 5
+    tickers:
+      - AAPL, MSFT, NVDA, AMZN, GOOGL, META, TSLA, JPM, JNJ, V
+      - PG, UNH, HD, MA, DIS, KO, PEP, CSCO, INTC, T
+      - VZ, WMT, MRK, ABT, XOM, CVX, BAC, NFLX, ADBE, CRM
+
+# ------------------------------------------------------------
+# Định nghĩa nhãn
+# ------------------------------------------------------------
+labeling:
+  horizon: 1                   # dự đoán T+1
+  mode: "threshold"            # binary | threshold
+  # Với mode=threshold: bỏ qua các ngày biến động quá nhỏ (nhiễu)
+  threshold: 0.005             # +0.5% -> 1 ; -0.5% -> 0 ; giữa -> loại bỏ
+  # Với mode=binary: threshold bị bỏ qua, y=1 nếu return > 0
+
+# ------------------------------------------------------------
+# Lọc dữ liệu bất thường (Yahoo đôi khi điều chỉnh giá sai)
+# ------------------------------------------------------------
+data_quality:
+  max_daily_std: 0.08      # std lợi suất ngày tối đa (8%)
+  max_jump_frac: 0.01      # tối đa 1% số ngày có |lợi suất| > 15%
+
+# ------------------------------------------------------------
+# Đặc trưng
+# ------------------------------------------------------------
+features:
+  windows: [5, 10, 21, 63, 252]
+  rsi_period: 14
+  atr_period: 14
+  adx_period: 14
+  bb_period: 20
+  stoch_period: 14
+  beta_window: 60
+  # Số ngày khởi động bị loại bỏ (đủ để mọi rolling window có giá trị)
+  warmup_days: 260
+
+# ------------------------------------------------------------
+# Thiết kế thực nghiệm: walk-forward có purge + embargo
+# TUYỆT ĐỐI KHÔNG dùng train_test_split(shuffle=True)
+# ------------------------------------------------------------
+validation:
+  n_folds: 5
+  val_window_days: 252         # mỗi fold validation dài ~1 năm giao dịch
+  purge_days: 21               # >= độ dài cửa sổ đặc trưng lớn nhất
+  embargo_days: 5              # khoảng cách sau tập validation
+  expanding: true              # tập huấn luyện mở rộng dần
+
+test:
+  start_date: "2024-01-01"
+  end_date: "2025-12-31"
+
+# ------------------------------------------------------------
+# Mô hình
+# ------------------------------------------------------------
+models:
+  evaluate: ["naive", "logreg", "rf", "lightgbm", "xgboost"]
+  primary: "lightgbm"
+  tune: false                  # bật Optuna (chỉ chạy trên tập validation)
+  n_trials: 50
+
+lightgbm:
+  objective: binary
+  learning_rate: 0.03
+  num_leaves: 15
+  min_child_samples: 200
+  feature_fraction: 0.5
+  bagging_fraction: 0.7
+  bagging_freq: 1
+  lambda_l1: 1.0
+  lambda_l2: 5.0
+  max_depth: 6
+  n_estimators: 2000
+  early_stopping_rounds: 100
+
+xgboost:
+  learning_rate: 0.03
+  max_depth: 5
+  min_child_weight: 20
+  subsample: 0.7
+  colsample_bytree: 0.5
+  reg_lambda: 5.0
+  n_estimators: 1500
+  early_stopping_rounds: 100
+
+randomforest:
+  n_estimators: 300
+  max_depth: 6
+  min_samples_leaf: 50
+  max_features: "sqrt"
+
+arima:
+  order: [2, 0, 2]             # ARIMA(p,d,q) trên chuỗi log-return
+  refit_every: 20              # refit lại sau mỗi N bước để tiết kiệm thời gian
+
+# ------------------------------------------------------------
+# Đánh giá & backtest
+# ------------------------------------------------------------
+evaluation:
+  n_bootstrap: 1000
+  dm_power: 2                  # loss = |e|^power cho Diebold-Mariano
+  sharpe_periods_per_year: 252
+
+backtest:
+  allow_short: false           # long-only (phù hợp quy định T+ của VN)
+  prob_threshold: 0.5
+
+explainability:
+  shap: true
+  shap_sample: 2000
